@@ -51,7 +51,7 @@ class NeuralNetwork:
         for layer_index, layer_size in enumerate(hidden_layers_sizes):
             hidden_layer = [Neuron(neuron_id=neuron_id_counter + i, neuron_type="Hidden") for i in range(layer_size)]
             self.hidden_layers.append(hidden_layer)
-            self.hidden_neurons.extend(hidden_layer)  # Keep track of all hidden neurons
+            self.hidden_neurons.extend(hidden_layer)
             neuron_id_counter += layer_size
 
         self.output_neurons = [Neuron(neuron_id=neuron_id_counter + i, neuron_type="Output") for i in range(output_size)]
@@ -109,19 +109,16 @@ class NeuralNetwork:
         # Активируем скрытые слои
         for layer_index, hidden_layer in enumerate(self.hidden_layers):
             current_layer_outputs = []
-            # Determine connections for the current layer
             if layer_index == 0:
                 connections = self.input_hidden_connections
-                previous_layer_outputs = layer_outputs[-1]  # Outputs from input layer
+                previous_layer_outputs = layer_outputs[-1]
             else:
                 connections = self.hidden_hidden_connections[layer_index - 1]
-                previous_layer_outputs = layer_outputs[-1]  # Outputs from previous hidden layer
+                previous_layer_outputs = layer_outputs[-1]
 
             for i, neuron in enumerate(hidden_layer):
                 connected_inputs_indices = connections[i]
-                # Check if the number of connected inputs matches the number of weights
                 if len(connected_inputs_indices) != len(neuron.w):
-                    # Adjust weights to match the number of connected inputs
                     num_missing = abs(len(connected_inputs_indices) - len(neuron.w))
                     if len(connected_inputs_indices) > len(neuron.w):
                         neuron.w = np.concatenate((neuron.w, np.random.normal(size=num_missing)))
@@ -135,19 +132,15 @@ class NeuralNetwork:
         # Активируем выходные нейроны
         output_layer_outputs = []
         for i, output_neuron in enumerate(self.output_neurons):
-            # Determine connections for the output layer
             if self.hidden_layers:
                 connections = self.hidden_output_connections
-                previous_layer_outputs = layer_outputs[-1]  # Outputs from last hidden layer
+                previous_layer_outputs = layer_outputs[-1]
             else:
-                # If no hidden layers, connect directly to input layer
                 connections = self.hidden_output_connections
-                previous_layer_outputs = layer_outputs[0]  # Outputs from input layer
+                previous_layer_outputs = layer_outputs[0]
 
             connected_inputs_indices = connections[i]
-             # Check if the number of connected inputs matches the number of weights
             if len(connected_inputs_indices) != len(output_neuron.w):
-                # Adjust weights to match the number of connected inputs
                 num_missing = abs(len(connected_inputs_indices) - len(output_neuron.w))
                 if len(connected_inputs_indices) > len(output_neuron.w):
                     output_neuron.w = np.concatenate((output_neuron.w, np.random.normal(size=num_missing)))
@@ -161,13 +154,11 @@ class NeuralNetwork:
 
     def train(self, inputs, targets, epochs=100):
         for epoch in range(epochs):
-            # Dynamic structure adaptation
             self.adapt_network_structure(inputs, targets)
 
             # Прямой проход
             layer_outputs = [inputs]
 
-            # Forward pass through hidden layers
             for layer_index, hidden_layer in enumerate(self.hidden_layers):
                 current_layer_outputs = []
                 if layer_index == 0:
@@ -178,12 +169,9 @@ class NeuralNetwork:
                     previous_layer_outputs = layer_outputs[-1]
 
                 for i, neuron in enumerate(hidden_layer):
-                    # Ensure that the neuron has weights before activation
                     if len(neuron.w) > 0:
                         connected_inputs_indices = connections[i]
-                        # Check if the number of connected inputs matches the number of weights
                         if len(connected_inputs_indices) != len(neuron.w):
-                            # Adjust weights to match the number of connected inputs
                             num_missing = abs(len(connected_inputs_indices) - len(neuron.w))
                             if len(connected_inputs_indices) > len(neuron.w):
                                 neuron.w = np.concatenate((neuron.w, np.random.normal(size=num_missing)))
@@ -193,11 +181,9 @@ class NeuralNetwork:
                         hidden_output = neuron.activate(connected_inputs)
                         current_layer_outputs.append(hidden_output)
                     else:
-                        # If the neuron has no weights, set its output to 0
-                        current_layer_outputs.append(0)  # Or another appropriate default value
+                        current_layer_outputs.append(0)
                 layer_outputs.append(current_layer_outputs)
 
-            # Forward pass through output layer
             output_layer_outputs = []
             if self.hidden_layers:
                 connections = self.hidden_output_connections
@@ -208,9 +194,7 @@ class NeuralNetwork:
 
             for i, output_neuron in enumerate(self.output_neurons):
                 connected_inputs_indices = connections[i]
-                 # Check if the number of connected inputs matches the number of weights
                 if len(connected_inputs_indices) != len(output_neuron.w):
-                    # Adjust weights to match the number of connected inputs
                     num_missing = abs(len(connected_inputs_indices) - len(output_neuron.w))
                     if len(connected_inputs_indices) > len(output_neuron.w):
                         output_neuron.w = np.concatenate((output_neuron.w, np.random.normal(size=num_missing)))
@@ -224,7 +208,6 @@ class NeuralNetwork:
             output_errors = np.array(targets) - np.array(output_layer_outputs)
 
             # Обратное распространение ошибки
-            # Output layer
             for i, output_neuron in enumerate(self.output_neurons):
                 connected_inputs_indices = connections[i]
                 for j, input_index in enumerate(connected_inputs_indices):
@@ -232,20 +215,17 @@ class NeuralNetwork:
                     output_neuron.w[j] += self.learning_rate * delta * previous_layer_outputs[input_index]
                 output_neuron.b += self.learning_rate * delta
 
-            # Hidden layers (backwards)
             hidden_errors = [np.zeros(len(layer)) for layer in self.hidden_layers]
             for layer_index in reversed(range(len(self.hidden_layers))):
                 hidden_layer = self.hidden_layers[layer_index]
                 current_layer_outputs = layer_outputs[layer_index + 1]
 
                 if layer_index == len(self.hidden_layers) - 1:
-                    # Last hidden layer
                     next_layer_neurons = self.output_neurons
                     next_layer_connections = self.hidden_output_connections
                     next_layer_errors = output_errors
                     next_layer_outputs = output_layer_outputs
                 else:
-                    # Middle hidden layers
                     next_layer_neurons = self.hidden_layers[layer_index + 1]
                     next_layer_connections = self.hidden_hidden_connections[layer_index]
                     next_layer_errors = hidden_errors[layer_index + 1]
@@ -254,14 +234,12 @@ class NeuralNetwork:
                 for i, neuron in enumerate(hidden_layer):
                     error_sum = 0
                     for j, next_neuron in enumerate(next_layer_neurons):
-                        # Ensure that the next neuron has connections
                         if j < len(next_layer_connections) and i in next_layer_connections[j]:
                             input_index_in_next_neuron = np.where(next_layer_connections[j] == i)[0][0]
                             delta = next_layer_errors[j] * self.sigmoid_derivative(next_layer_outputs[j])
                             error_sum += delta * next_neuron.w[input_index_in_next_neuron]
                     hidden_errors[layer_index][i] = error_sum
 
-                    # Update weights
                     if layer_index == 0:
                         previous_layer_outputs = layer_outputs[0]
                         connections = self.input_hidden_connections
@@ -269,16 +247,12 @@ class NeuralNetwork:
                         previous_layer_outputs = layer_outputs[layer_index]
                         connections = self.hidden_hidden_connections[layer_index - 1]
 
-                    # Check if i is within the bounds of connections
                     if i < len(connections):
                         connected_inputs_indices = connections[i]
-                        # Check if connected_inputs_indices is not empty
                         if len(connected_inputs_indices) > 0:
-                            # Ensure j is within the bounds of neuron.w
                             original_num_weights = len(neuron.w)
                             num_connections = len(connected_inputs_indices)
                             min_len = min(original_num_weights, num_connections)
-                            # Ensure the size of neuron.w matches the number of connections
                             if len(neuron.w) != len(connected_inputs_indices):
                                 if len(connected_inputs_indices) > len(neuron.w):
                                     neuron.w = np.concatenate((neuron.w, np.random.normal(size=len(connected_inputs_indices) - len(neuron.w))))
@@ -306,9 +280,7 @@ class NeuralNetwork:
             self.hidden_neurons.append(new_neuron)
             self.hidden_layers_sizes[layer_index] += 1
 
-            # Update connections
             if layer_index == 0:
-                # Connect to input layer
                 connected_inputs_indices = np.random.choice(
                     range(len(self.input_neurons)),
                     size=np.random.randint(1, len(self.input_neurons) + 1),
@@ -317,7 +289,6 @@ class NeuralNetwork:
                 self.input_hidden_connections.append(connected_inputs_indices)
                 new_neuron.w = np.random.normal(size=len(connected_inputs_indices))
             else:
-                # Connect to previous hidden layer
                 prev_layer_size = self.hidden_layers_sizes[layer_index-1]
                 connected_inputs_indices = np.random.choice(
                     range(len(self.hidden_layers[layer_index-1])),
@@ -327,9 +298,7 @@ class NeuralNetwork:
                 self.hidden_hidden_connections[layer_index-1].append(connected_inputs_indices)
                 new_neuron.w = np.random.normal(size=len(connected_inputs_indices))
 
-            # Update connections to the next layer
             if layer_index < len(self.hidden_layers) - 1:
-                # Ensure that hidden_hidden_connections[layer_index] exists
                 if layer_index < len(self.hidden_hidden_connections):
                     for i in range(len(self.hidden_hidden_connections[layer_index])):
                         self.hidden_hidden_connections[layer_index][i] = np.append(self.hidden_hidden_connections[layer_index][i], len(layer) - 1)
@@ -350,19 +319,16 @@ class NeuralNetwork:
             try:
                 neuron_index = next(i for i, neuron in enumerate(layer) if neuron.id == neuron_id)
             except StopIteration:
-                raise ValueError(f"Neuron with ID {neuron_id} not found in layer {layer_index}.")
+                raise ValueError(f"Нейрон с ID {neuron_id} не найден в слое {layer_index}.")
 
-            # Remove neuron
             del layer[neuron_index]
             self.hidden_layers_sizes[layer_index] -= 1
 
-            # Update connections
             if layer_index == 0 and neuron_index < len(self.input_hidden_connections):
                 del self.input_hidden_connections[neuron_index]
             elif layer_index > 0 and layer_index - 1 < len(self.hidden_hidden_connections) and neuron_index < len(self.hidden_hidden_connections[layer_index-1]):
                 del self.hidden_hidden_connections[layer_index-1][neuron_index]
 
-            # Update connections from this layer to the next
             if layer_index < len(self.hidden_layers) - 1:
                 for i in range(len(self.hidden_hidden_connections[layer_index])):
                     indices_to_remove = np.where(self.hidden_hidden_connections[layer_index][i] == neuron_index)[0]
@@ -380,7 +346,6 @@ class NeuralNetwork:
 
     def update_connections_after_removal(self, layer_index, removed_index):
         """Обновляет индексы связей после удаления нейрона."""
-        # Update connections within the same layer
         if layer_index < len(self.hidden_layers) - 1:
             for i in range(len(self.hidden_hidden_connections[layer_index])):
                 self.hidden_hidden_connections[layer_index][i][self.hidden_hidden_connections[layer_index][i] > removed_index] -= 1
@@ -417,16 +382,12 @@ class NeuralNetwork:
                 else:
                     connections = self.hidden_hidden_connections[layer_index-1]
 
-                # Check if i is within the bounds of connections
                 if i < len(connections):
                     connected_inputs_indices = connections[i]
-                    # Check if connected_inputs_indices is not empty
                     if len(connected_inputs_indices) > 0:
-                        # Ensure j is within the bounds of neuron.w
                         original_num_weights = len(neuron.w)
                         num_connections = len(connected_inputs_indices)
                         min_len = min(original_num_weights, num_connections)
-                        # Ensure the size of neuron.w matches the number of connections
                         if len(neuron.w) != len(connected_inputs_indices):
                             if len(connected_inputs_indices) > len(neuron.w):
                                 neuron.w = np.concatenate((neuron.w, np.random.normal(size=len(connected_inputs_indices) - len(neuron.w))))
@@ -437,10 +398,8 @@ class NeuralNetwork:
                             if abs(neuron.w[j]) < self.connection_threshold:
                                 indices_to_remove.append(j)
 
-                        # Remove connections in reverse order to avoid index issues
                         for j in sorted(indices_to_remove, reverse=True):
                             if j < len(connected_inputs_indices) and j < len(neuron.w) and len(connected_inputs_indices) > 0:
-                                # Ensure there are connections to remove
                                 if len(connected_inputs_indices) > j:
                                     input_index = connected_inputs_indices[j]
                                     connections[i] = np.delete(connections[i], j)
@@ -456,7 +415,6 @@ class NeuralNetwork:
         for neuron in self.input_neurons:
             G.add_node(neuron.id, layer=0, type=neuron.type)
 
-        # Add hidden layers
         layer_index = 1
         for hidden_layer in self.hidden_layers:
             for neuron in hidden_layer:
@@ -466,29 +424,25 @@ class NeuralNetwork:
         for neuron in self.output_neurons:
             G.add_node(neuron.id, layer=layer_index, type=neuron.type)
 
-        # Add edges (connections)
-        # Input to first hidden layer
         for i, hidden_neuron in enumerate(self.hidden_layers[0]):
-            if i < len(self.input_hidden_connections):  # check if index is within bounds
+            if i < len(self.input_hidden_connections):
                 connected_inputs_indices = self.input_hidden_connections[i]
                 for input_index in connected_inputs_indices:
                     G.add_edge(input_index, hidden_neuron.id)
 
-        # Hidden layers to hidden layers
         for layer_index in range(len(self.hidden_layers) - 1):
             current_layer = self.hidden_layers[layer_index]
             next_layer = self.hidden_layers[layer_index + 1]
             connections = self.hidden_hidden_connections[layer_index]
 
             for i, next_neuron in enumerate(next_layer):
-                 if i < len(connections): # check if index is within bounds
+                 if i < len(connections):
                     connected_inputs_indices = connections[i]
                     for input_index in connected_inputs_indices:
                         G.add_edge(current_layer[input_index].id, next_neuron.id)
 
-        # Last hidden layer to output
         for i, output_neuron in enumerate(self.output_neurons):
-             if i < len(self.hidden_output_connections): # check if index is within bounds
+             if i < len(self.hidden_output_connections):
                 connected_inputs_indices = self.hidden_output_connections[i]
                 for input_index in connected_inputs_indices:
                     G.add_edge(self.hidden_layers[-1][input_index].id, output_neuron.id)
