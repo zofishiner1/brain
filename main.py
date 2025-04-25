@@ -1,75 +1,146 @@
 import numpy as np
+import json
+from PIL import Image
 import networkx as nx
 import plotly.graph_objects as go
 
 class Neuron:
     def __init__(self, number_of_weights=1, neuron_id=None, neuron_type="Input", activation_function="sigmoid"):
-        self.w = np.random.normal(size=number_of_weights)  # Случайные веса
-        self.b = np.random.normal()  # Случайное смещение
-        self.id = int(neuron_id)  # Преобразование идентификатора в int
-        self.type = neuron_type  # Тип нейрона (входной, скрытый, выходной)
-        self.activation_function = activation_function  # Функция активации
-        self.activity = 0  # Активность нейрона
+        self.w = np.random.normal(size=number_of_weights)
+        self.b = np.random.normal()
+        self.id = int(neuron_id) if neuron_id is not None else None
+        self.type = neuron_type
+        self.activation_function = activation_function
+        self.activity = 0
 
     def activate(self, inputs):
-        x = np.dot(self.w, inputs) + self.b  # Взвешенная сумма
+        inputs = np.array(inputs)  # Преобразуем входные данные в numpy массив (если они еще не в таком формате)
+    
+        # Приводим входные данные и веса к одинаковой форме
+        if inputs.ndim == 1 and self.w.ndim == 1 and inputs.shape[0] != self.w.shape[0]:
+            if inputs.shape[0] < self.w.shape[0]:
+                inputs = np.pad(inputs, (0, self.w.shape[0] - inputs.shape[0]), mode='constant')
+            else:
+                inputs = inputs[:self.w.shape[0]]
+        elif inputs.ndim == 2 and self.w.ndim == 1 and inputs.shape[1] != self.w.shape[0]:
+            inputs = inputs[:, :self.w.shape[0]]  # Подгонка размерности входа
+
+        # Проверка размерностей
+        if inputs.shape[0] != self.w.shape[0]:
+            raise ValueError(f"Input size {inputs.shape[0]} does not match weight size {self.w.shape[0]}")
+
+        # Вычисление взвешенной суммы
+        x = np.dot(self.w, inputs) + self.b
+    
+        # Применение активационной функции
         if self.activation_function == "sigmoid":
-            output = 1 / (1 + np.exp(-x))  # Сигмоидная функция активации
+            output = 1 / (1 + np.exp(-x))
         elif self.activation_function == "relu":
-            output = np.maximum(0, x)  # ReLU
+            output = np.maximum(0, x)
         elif self.activation_function == "tanh":
-            output = np.tanh(x)  # Гиперболический тангенс
+            output = np.tanh(x)
         else:
             raise ValueError("Unknown activation function")
-        self.activity = output  # Обновляем активность нейрона
+    
+        self.activity = output
         return output
 
-    def set_weights(self, weights):
-        self.w = weights
 
-    def set_bias(self, bias):
-        self.b = bias
+    def serialize(self):
+        return {
+            'w': self.w.tolist(),
+            'b': self.b,
+            'id': self.id,
+            'type': self.type,
+            'activation_function': self.activation_function,
+            'activity': self.activity
+        }
+
+    @classmethod
+    def deserialize(cls, data):
+        neuron = cls(neuron_id=data['id'], neuron_type=data['type'], activation_function=data['activation_function'])
+        neuron.w = np.array(data['w'])
+        neuron.b = data['b']
+        neuron.activity = data['activity']
+        return neuron
 
 class NeuralNetwork:
     def __init__(self, input_size, hidden_layers_sizes, output_size, learning_rate=0.01,
                  neuron_addition_threshold=0.9, neuron_removal_threshold=0.1,
-                 connection_threshold=0.2):
+                 dropout_rate=0.5, l1_lambda=0.01, l2_lambda=0.01,
+                 layer_addition_threshold=0.95, layer_removal_threshold=0.05,
+                 max_layers=5, adaptation_cooldown=10,
+                 neuron_addition_counter_limit=5, neuron_removal_counter_limit=5,
+                 layer_addition_counter_limit=10, layer_removal_counter_limit=10,
+                 batch_size=32, patience=10, connection_threshold=0.2): # Добавлены batch_size и patience
+        # Размеры слоев
         self.input_size = input_size
-        self.hidden_layers_sizes = hidden_layers_sizes  # Список размеров скрытых слоев
+        self.hidden_layers_sizes = hidden_layers_sizes.copy()
         self.output_size = output_size
+
+        # Параметры обучения
         self.learning_rate = learning_rate
+        self.dropout_rate = dropout_rate
+        self.l1_lambda = l1_lambda
+        self.l2_lambda = l2_lambda
+        self.batch_size = batch_size  # Размер пакета
+        self.patience = patience  # Параметр для ранней остановки
+
+        # Пороги для добавления и удаления нейронов/слоев
         self.neuron_addition_threshold = neuron_addition_threshold
         self.neuron_removal_threshold = neuron_removal_threshold
+        self.layer_addition_threshold = layer_addition_threshold
+        self.layer_removal_threshold = layer_removal_threshold
+        self.max_layers = max_layers
         self.connection_threshold = connection_threshold
 
-        self.input_neurons = [Neuron(neuron_id=i, neuron_type="Input") for i in range(input_size)]
+        # Параметры для адаптации структуры сети
+        self.adaptation_cooldown = adaptation_cooldown
+        self.neuron_addition_counter_limit = neuron_addition_counter_limit
+        self.neuron_removal_counter_limit = neuron_removal_counter_limit
+        self.layer_addition_counter_limit = layer_addition_counter_limit
+        self.layer_removal_counter_limit = layer_removal_counter_limit
 
-        # Создаем скрытые слои
+        # Инициализация слоев
+        self.input_neurons = [Neuron(neuron_id=i, neuron_type="Input") for i in range(input_size)]
         self.hidden_layers = []
         self.hidden_neurons = []
         neuron_id_counter = input_size
-        for layer_index, layer_size in enumerate(hidden_layers_sizes):
-            hidden_layer = [Neuron(neuron_id=neuron_id_counter + i, neuron_type="Hidden") for i in range(layer_size)]
+
+        for layer_size in hidden_layers_sizes:
+            hidden_layer = [Neuron(number_of_weights=1, neuron_id=neuron_id_counter + i, neuron_type="Hidden") for i in range(layer_size)]
             self.hidden_layers.append(hidden_layer)
             self.hidden_neurons.extend(hidden_layer)
             neuron_id_counter += layer_size
 
         self.output_neurons = [Neuron(neuron_id=neuron_id_counter + i, neuron_type="Output") for i in range(output_size)]
 
-        # Создаем соединения между слоями
+        # Инициализация связей
         self.input_hidden_connections = self.create_random_connections(input_size, hidden_layers_sizes[0]) if hidden_layers_sizes else []
         self.hidden_hidden_connections = []
         for i in range(len(hidden_layers_sizes) - 1):
             self.hidden_hidden_connections.append(self.create_random_connections(hidden_layers_sizes[i], hidden_layers_sizes[i+1]))
         self.hidden_output_connections = self.create_random_connections(hidden_layers_sizes[-1], output_size) if hidden_layers_sizes else self.create_random_connections(input_size, output_size)
 
-        # Инициализируем веса
+        # Инициализация весов
         self.initialize_weights()
+
+        # Другие параметры
+        self.layer_errors = []
+        self.n = 5
+
+        # Инициализация счетчиков для адаптации структуры
+        self.neuron_addition_counter = 0
+        self.neuron_removal_counter = 0
+        self.layer_addition_counter = 0
+        self.layer_removal_counter = 0
+        self.last_adaptation = 0
+        self.best_loss = float('inf')
+        self.counter = 0
 
     def create_random_connections(self, source_size, target_size):
         connections = []
         for _ in range(target_size):
-            # Каждый нейрон целевого слоя случайно подключается к нейронам исходного слоя
             connected_sources = np.random.choice(
                 range(source_size),
                 size=np.random.randint(1, source_size + 1),
@@ -79,34 +150,26 @@ class NeuralNetwork:
         return connections
 
     def initialize_weights(self):
-        # Веса для связей между входным и первым скрытым слоем
         if self.hidden_layers:
             for i, neuron in enumerate(self.hidden_layers[0]):
-                self.hidden_neurons[i].w = np.random.normal(size=len(self.input_hidden_connections[i]))
-
-            # Веса для связей между скрытыми слоями
+                neuron.w = np.random.normal(size=len(self.input_hidden_connections[i]))
             for layer_index in range(len(self.hidden_layers) - 1):
                 for i, neuron in enumerate(self.hidden_layers[layer_index+1]):
-                    self.hidden_neurons[sum(self.hidden_layers_sizes[:layer_index+1]) + i].w = np.random.normal(size=len(self.hidden_hidden_connections[layer_index][i]))
-
-            # Веса для связей между последним скрытым слоем и выходным слоем
+                    neuron.w = np.random.normal(size=len(self.hidden_hidden_connections[layer_index][i]))
             for i, neuron in enumerate(self.output_neurons):
-                self.output_neurons[i].w = np.random.normal(size=len(self.hidden_output_connections[i]))
+                neuron.w = np.random.normal(size=len(self.hidden_output_connections[i]))
         else:
-            # Если нет скрытых слоев, соединяем входной слой напрямую с выходным
             self.hidden_output_connections = self.create_random_connections(self.input_size, self.output_size)
             for i, neuron in enumerate(self.output_neurons):
-                self.output_neurons[i].w = np.random.normal(size=len(self.hidden_output_connections[i]))
+                neuron.w = np.random.normal(size=len(self.hidden_output_connections[i]))
 
     def predict(self, inputs):
-        # Проверяем, что размер входных данных соответствует количеству входных нейронов
-        if len(inputs) != len(self.input_neurons):
-            raise ValueError("Incorrect number of inputs provided.")
+        if inputs.shape[1] != self.input_size:
+            raise ValueError(f"Incorrect number of inputs provided. Expected {self.input_size}, got {inputs.shape[1]}.")
 
-        # Активируем слои последовательно
-        layer_outputs = [inputs]  # Начинаем с входных данных
+        layer_outputs = [inputs[0]]
+        dropout_masks = []
 
-        # Активируем скрытые слои
         for layer_index, hidden_layer in enumerate(self.hidden_layers):
             current_layer_outputs = []
             if layer_index == 0:
@@ -116,7 +179,13 @@ class NeuralNetwork:
                 connections = self.hidden_hidden_connections[layer_index - 1]
                 previous_layer_outputs = layer_outputs[-1]
 
+            dropout_mask = np.random.binomial(1, 1 - self.dropout_rate, size=len(hidden_layer))
+            dropout_masks.append(dropout_mask)
+
             for i, neuron in enumerate(hidden_layer):
+                if len(connections) <= i:
+                    continue
+
                 connected_inputs_indices = connections[i]
                 if len(connected_inputs_indices) != len(neuron.w):
                     num_missing = abs(len(connected_inputs_indices) - len(neuron.w))
@@ -124,12 +193,16 @@ class NeuralNetwork:
                         neuron.w = np.concatenate((neuron.w, np.random.normal(size=num_missing)))
                     else:
                         neuron.w = neuron.w[:len(connected_inputs_indices)]
-                connected_inputs = [previous_layer_outputs[j] for j in connected_inputs_indices]
-                hidden_output = neuron.activate(connected_inputs)
-                current_layer_outputs.append(hidden_output)
+
+                for j in connected_inputs_indices:
+                    if j >= len(previous_layer_outputs):
+                        raise IndexError(f"Index {j} out of range for previous_layer_outputs with length {len(previous_layer_outputs)}")
+                    connected_inputs = [previous_layer_outputs[j] for j in connected_inputs_indices if j < len(previous_layer_outputs)]
+                    output = neuron.activate(connected_inputs) * dropout_mask[i]
+                    current_layer_outputs.append(output)
+
             layer_outputs.append(current_layer_outputs)
 
-        # Активируем выходные нейроны
         output_layer_outputs = []
         for i, output_neuron in enumerate(self.output_neurons):
             if self.hidden_layers:
@@ -146,99 +219,82 @@ class NeuralNetwork:
                     output_neuron.w = np.concatenate((output_neuron.w, np.random.normal(size=num_missing)))
                 else:
                     output_neuron.w = output_neuron.w[:len(connected_inputs_indices)]
-            connected_inputs = [previous_layer_outputs[j] for j in connected_inputs_indices]
-            output_output = output_neuron.activate(connected_inputs)
-            output_layer_outputs.append(output_output)
 
-        return output_layer_outputs
+            connected_inputs = [previous_layer_outputs[j] for j in connected_inputs_indices if j < len(previous_layer_outputs)]
+            output = output_neuron.activate(connected_inputs)
+            output_layer_outputs.append(output)
+
+        return output_layer_outputs, dropout_masks
 
     def train(self, inputs, targets, epochs=100):
+        best_loss = float('inf')
+        patience = 10
+        counter = 0
+
         for epoch in range(epochs):
-            self.adapt_network_structure(inputs, targets)
 
-            # Прямой проход
-            layer_outputs = [inputs]
+            for idx in range(len(inputs)):
+                input_sample = inputs[idx]
+                target_sample = targets[idx]
 
-            for layer_index, hidden_layer in enumerate(self.hidden_layers):
-                current_layer_outputs = []
-                if layer_index == 0:
-                    connections = self.input_hidden_connections
-                    previous_layer_outputs = layer_outputs[-1]
+                if self.adaptation_cooldown == 0:
+                    self.adapt_network_structure(input_sample.reshape(1, -1), target_sample.reshape(1, -1), epoch=epoch)
+                    self.adaptation_cooldown = 10  # Сброс счетчика
                 else:
-                    connections = self.hidden_hidden_connections[layer_index - 1]
-                    previous_layer_outputs = layer_outputs[-1]
+                    self.adaptation_cooldown -= 1  # Уменьшаем счетчик
 
-                for i, neuron in enumerate(hidden_layer):
-                    if len(neuron.w) > 0:
-                        connected_inputs_indices = connections[i]
-                        if len(connected_inputs_indices) != len(neuron.w):
-                            num_missing = abs(len(connected_inputs_indices) - len(neuron.w))
-                            if len(connected_inputs_indices) > len(neuron.w):
-                                neuron.w = np.concatenate((neuron.w, np.random.normal(size=num_missing)))
-                            else:
-                                neuron.w = neuron.w[:len(connected_inputs_indices)]
-                        connected_inputs = [previous_layer_outputs[j] for j in connected_inputs_indices]
-                        hidden_output = neuron.activate(connected_inputs)
-                        current_layer_outputs.append(hidden_output)
+                layer_outputs = [input_sample]
+                output_layer_outputs, dropout_masks = self.predict(input_sample.reshape(1, -1))
+
+                output_errors = target_sample - np.array(output_layer_outputs)
+
+                l1_term = sum(np.sum(np.abs(neuron.w)) for neuron in self.hidden_neurons + self.output_neurons)
+                l2_term = sum(np.sum(neuron.w ** 2) for neuron in self.hidden_neurons + self.output_neurons)
+
+                loss = np.mean(output_errors ** 2) + self.l1_lambda * l1_term + self.l2_lambda * l2_term
+
+                # Обновление весов выходного слоя
+                for i, output_neuron in enumerate(self.output_neurons):
+                    connected_inputs_indices = self.hidden_output_connections[i]
+                    for j, input_index in enumerate(connected_inputs_indices):
+                        delta = output_errors[i] * self.sigmoid_derivative(output_layer_outputs[i])
+                        output_neuron.w[j] += self.learning_rate * (delta * layer_outputs[-1][int(input_index)] -
+                                                                     self.l1_lambda * np.sign(output_neuron.w[j]) -
+                                                                     self.l2_lambda * output_neuron.w[j])
+                        output_neuron.b += self.learning_rate * delta
+
+                hidden_errors = [np.zeros(len(layer)) for layer in self.hidden_layers]
+
+                # Обратное распространение ошибки
+                for layer_index in reversed(range(len(self.hidden_layers))):
+                    hidden_layer = self.hidden_layers[layer_index]
+                    if layer_index + 1 < len(layer_outputs):
+                        current_layer_outputs = layer_outputs[layer_index + 1]
                     else:
-                        current_layer_outputs.append(0)
-                layer_outputs.append(current_layer_outputs)
+                       current_layer_outputs = [0.0] * len(hidden_layer)
 
-            output_layer_outputs = []
-            if self.hidden_layers:
-                connections = self.hidden_output_connections
-                previous_layer_outputs = layer_outputs[-1]
-            else:
-                connections = self.hidden_output_connections
-                previous_layer_outputs = layer_outputs[0]
-
-            for i, output_neuron in enumerate(self.output_neurons):
-                connected_inputs_indices = connections[i]
-                if len(connected_inputs_indices) != len(output_neuron.w):
-                    num_missing = abs(len(connected_inputs_indices) - len(output_neuron.w))
-                    if len(connected_inputs_indices) > len(output_neuron.w):
-                        output_neuron.w = np.concatenate((output_neuron.w, np.random.normal(size=num_missing)))
+                    if layer_index == len(self.hidden_layers) - 1:
+                        next_layer_neurons = self.output_neurons
+                        next_layer_connections = self.hidden_output_connections
+                        next_layer_errors = output_errors
+                        next_layer_outputs = output_layer_outputs
                     else:
-                        output_neuron.w = output_neuron.w[:len(connected_inputs_indices)]
-                connected_inputs = [previous_layer_outputs[j] for j in connected_inputs_indices]
-                output_output = output_neuron.activate(connected_inputs)
-                output_layer_outputs.append(output_output)
+                        next_layer_neurons = self.hidden_layers[layer_index + 1]
+                        next_layer_connections = self.hidden_hidden_connections[layer_index]
+                        next_layer_errors = hidden_errors[layer_index + 1]
+                        next_layer_outputs = layer_outputs[layer_index + 2]
 
-            # Вычисление ошибки
-            output_errors = np.array(targets) - np.array(output_layer_outputs)
+                    dropout_mask = dropout_masks[layer_index]
 
-            # Обратное распространение ошибки
-            for i, output_neuron in enumerate(self.output_neurons):
-                connected_inputs_indices = connections[i]
-                for j, input_index in enumerate(connected_inputs_indices):
-                    delta = output_errors[i] * self.sigmoid_derivative(output_layer_outputs[i])
-                    output_neuron.w[j] += self.learning_rate * delta * previous_layer_outputs[input_index]
-                output_neuron.b += self.learning_rate * delta
+                    for i, neuron in enumerate(hidden_layer):
+                        error_sum = 0
+                        for j, next_neuron in enumerate(next_layer_neurons):
+                            if j < len(next_layer_connections) and i in next_layer_connections[j]:
+                                input_index_in_next_neuron = np.where(next_layer_connections[j] == i)[0][0]
+                                delta = next_layer_errors[j] * self.sigmoid_derivative(next_layer_outputs[j])
+                                error_sum += delta * next_neuron.w[input_index_in_next_neuron]
 
-            hidden_errors = [np.zeros(len(layer)) for layer in self.hidden_layers]
-            for layer_index in reversed(range(len(self.hidden_layers))):
-                hidden_layer = self.hidden_layers[layer_index]
-                current_layer_outputs = layer_outputs[layer_index + 1]
-
-                if layer_index == len(self.hidden_layers) - 1:
-                    next_layer_neurons = self.output_neurons
-                    next_layer_connections = self.hidden_output_connections
-                    next_layer_errors = output_errors
-                    next_layer_outputs = output_layer_outputs
-                else:
-                    next_layer_neurons = self.hidden_layers[layer_index + 1]
-                    next_layer_connections = self.hidden_hidden_connections[layer_index]
-                    next_layer_errors = hidden_errors[layer_index + 1]
-                    next_layer_outputs = layer_outputs[layer_index + 2]
-
-                for i, neuron in enumerate(hidden_layer):
-                    error_sum = 0
-                    for j, next_neuron in enumerate(next_layer_neurons):
-                        if j < len(next_layer_connections) and i in next_layer_connections[j]:
-                            input_index_in_next_neuron = np.where(next_layer_connections[j] == i)[0][0]
-                            delta = next_layer_errors[j] * self.sigmoid_derivative(next_layer_outputs[j])
-                            error_sum += delta * next_neuron.w[input_index_in_next_neuron]
-                    hidden_errors[layer_index][i] = error_sum
+                    hidden_errors[layer_index][i] = error_sum * dropout_mask[i]
 
                     if layer_index == 0:
                         previous_layer_outputs = layer_outputs[0]
@@ -247,35 +303,53 @@ class NeuralNetwork:
                         previous_layer_outputs = layer_outputs[layer_index]
                         connections = self.hidden_hidden_connections[layer_index - 1]
 
-                    if i < len(connections):
-                        connected_inputs_indices = connections[i]
-                        if len(connected_inputs_indices) > 0:
-                            original_num_weights = len(neuron.w)
-                            num_connections = len(connected_inputs_indices)
-                            min_len = min(original_num_weights, num_connections)
-                            if len(neuron.w) != len(connected_inputs_indices):
-                                if len(connected_inputs_indices) > len(neuron.w):
-                                    neuron.w = np.concatenate((neuron.w, np.random.normal(size=len(connected_inputs_indices) - len(neuron.w))))
-                                else:
-                                    neuron.w = neuron.w[:len(connected_inputs_indices)]
-                            for j in range(min_len):
-                                delta = hidden_errors[layer_index][i] * self.sigmoid_derivative(current_layer_outputs[i])
-                                neuron.w[j] += self.learning_rate * delta * previous_layer_outputs[connected_inputs_indices[j]]
-                            neuron.b += self.learning_rate * delta
+                    for i, neuron in enumerate(hidden_layer):
+                        if i < len(connections):
+                            connected_inputs_indices = connections[i]
+                            if len(connected_inputs_indices) > 0:
+                                original_num_weights = len(neuron.w)
+                                num_connections = len(connected_inputs_indices)
+                                min_len = min(original_num_weights, num_connections)
 
-            # Вывод ошибки на каждой эпохе (можно настроить)
-            if epoch % 10 == 0:
+                                if len(neuron.w) != len(connected_inputs_indices):
+                                    if len(connected_inputs_indices) > len(neuron.w):
+                                        neuron.w = np.concatenate(
+                                            (neuron.w, np.random.normal(size=len(connected_inputs_indices) - len(neuron.w))))
+                                    else:
+                                        neuron.w = neuron.w[:len(connected_inputs_indices)]
+
+                                for j in range(min_len):
+                                    delta = hidden_errors[layer_index][i] * self.sigmoid_derivative(
+                                        current_layer_outputs[i])
+                                    neuron.w[j] += self.learning_rate * (
+                                            delta * previous_layer_outputs[int(connected_inputs_indices[j])] -
+                                            self.l1_lambda * np.sign(neuron.w[j]) -
+                                            self.l2_lambda * neuron.w[j])
+                                    neuron.b += self.learning_rate * delta
+
+            if loss < best_loss:
+                best_loss = loss
+                counter = 0
+            else:
+                counter += 1
+
+            if counter >= patience:
+                print("Early stopping triggered")
+                break
+
+            if epoch:
                 mse = np.mean(output_errors ** 2)
-                print(f"Epoch {epoch}, MSE: {mse}")
+                print(f"Epoch {epoch}, MSE: {mse}, Loss: {loss}, Adapt cooldown: {self.adaptation_cooldown}")
+
 
     def sigmoid_derivative(self, output):
         return output * (1 - output)
 
     def add_neuron(self, layer_index):
-        """Добавляет новый нейрон в указанный скрытый слой."""
         if 0 <= layer_index < len(self.hidden_layers):
             layer = self.hidden_layers[layer_index]
-            new_neuron = Neuron(neuron_id=len(self.hidden_neurons) + len(self.input_neurons), neuron_type="Hidden")
+            new_neuron_id = max([neuron.id for neuron in self.hidden_neurons + self.input_neurons + self.output_neurons]) + 1
+            new_neuron = Neuron(number_of_weights=1, neuron_id=new_neuron_id, neuron_type="Hidden")
             layer.append(new_neuron)
             self.hidden_neurons.append(new_neuron)
             self.hidden_layers_sizes[layer_index] += 1
@@ -288,91 +362,91 @@ class NeuralNetwork:
                 )
                 self.input_hidden_connections.append(connected_inputs_indices)
                 new_neuron.w = np.random.normal(size=len(connected_inputs_indices))
+                print(f"Добавлен нейрон в слой {layer_index}, ID: {new_neuron.id}")
             else:
-                prev_layer_size = self.hidden_layers_sizes[layer_index-1]
                 connected_inputs_indices = np.random.choice(
-                    range(len(self.hidden_layers[layer_index-1])),
-                    size=np.random.randint(1, len(self.hidden_layers[layer_index-1]) + 1),
+                    range(len(self.hidden_layers[layer_index - 1])),
+                    size=np.random.randint(1, len(self.hidden_layers[layer_index - 1]) + 1),
                     replace=False
                 )
-                self.hidden_hidden_connections[layer_index-1].append(connected_inputs_indices)
+                self.hidden_hidden_connections[layer_index - 1].append(connected_inputs_indices)
                 new_neuron.w = np.random.normal(size=len(connected_inputs_indices))
-
-            if layer_index < len(self.hidden_layers) - 1:
-                if layer_index < len(self.hidden_hidden_connections):
-                    for i in range(len(self.hidden_hidden_connections[layer_index])):
-                        self.hidden_hidden_connections[layer_index][i] = np.append(self.hidden_hidden_connections[layer_index][i], len(layer) - 1)
-            else:
-                for i in range(len(self.hidden_output_connections)):
-                    self.hidden_output_connections[i] = np.append(self.hidden_output_connections[i], len(layer) - 1)
-        else:
-            raise ValueError("Invalid layer index for adding neuron.")
+                print(f"Добавлен нейрон в слой {layer_index}, ID: {new_neuron.id}")
 
     def remove_neuron(self, layer_index, neuron_id=None):
-        """Удаляет нейрон из указанного скрытого слоя по ID."""
         if 0 <= layer_index < len(self.hidden_layers):
             layer = self.hidden_layers[layer_index]
             if neuron_id is None:
                 raise ValueError("Neuron ID must be specified for removal.")
 
-            # Находим индекс нейрона в списке скрытых нейронов
-            try:
-                neuron_index = next(i for i, neuron in enumerate(layer) if neuron.id == neuron_id)
-            except StopIteration:
-                raise ValueError(f"Нейрон с ID {neuron_id} не найден в слое {layer_index}.")
+            neuron_index = None
+            for i, neuron in enumerate(layer):
+                if neuron.id == neuron_id:
+                    neuron_index = i
+                    break
+
+            if neuron_index is None:
+                raise ValueError(f"Neuron with ID {neuron_id} not found in layer {layer_index}.")
 
             del layer[neuron_index]
             self.hidden_layers_sizes[layer_index] -= 1
+            self.hidden_neurons = [neuron for layer in self.hidden_layers for neuron in layer]
 
-            if layer_index == 0 and neuron_index < len(self.input_hidden_connections):
-                del self.input_hidden_connections[neuron_index]
-            elif layer_index > 0 and layer_index - 1 < len(self.hidden_hidden_connections) and neuron_index < len(self.hidden_hidden_connections[layer_index-1]):
-                del self.hidden_hidden_connections[layer_index-1][neuron_index]
-
-            if layer_index < len(self.hidden_layers) - 1:
-                for i in range(len(self.hidden_hidden_connections[layer_index])):
-                    indices_to_remove = np.where(self.hidden_hidden_connections[layer_index][i] == neuron_index)[0]
-                    self.hidden_hidden_connections[layer_index][i] = np.delete(self.hidden_hidden_connections[layer_index][i], indices_to_remove)
+            if layer_index == 0:
+                if neuron_index < len(self.input_hidden_connections):
+                    del self.input_hidden_connections[neuron_index]
             else:
-                for i in range(len(self.hidden_output_connections)):
-                    indices_to_remove = np.where(self.hidden_output_connections[i] == neuron_index)[0]
-                    self.hidden_output_connections[i] = np.delete(self.hidden_output_connections[i], indices_to_remove)
+                if neuron_index < len(self.hidden_hidden_connections[layer_index - 1]):
+                    del self.hidden_hidden_connections[layer_index - 1][neuron_index]
 
-            # Update indices in connections after removal
-            self.update_connections_after_removal(layer_index, neuron_index)
+    def add_layer(self, number_of_neurons, activation_function="sigmoid"):
+        new_layer = []
+        for _ in range(number_of_neurons):
+            new_layer.append(Neuron(number_of_weights=self.input_size, activation_function=activation_function))
 
+        self.layers.append(new_layer)
+        self.input_size = number_of_neurons
+        self.layer_outputs.append([neuron.activity for neuron in new_layer])
+        print(f"Добавлен слой с размером {number_of_neurons}")
+
+    def remove_layer(self, layer_index):
+        if len(self.hidden_layers) <= 1:
+            print("Нельзя удалить единственный слой.")
+            return False
+
+        if not (0 <= layer_index < len(self.hidden_layers)):
+            print("Неверный индекс слоя для удаления.")
+            return False
+
+        del self.hidden_layers[layer_index]
+        del self.hidden_layers_sizes[layer_index]
+        self.hidden_neurons = [neuron for layer in self.hidden_layers for neuron in layer]
+
+        if layer_index == 0:
+            self.input_hidden_connections = self.create_random_connections(self.input_size, self.hidden_layers_sizes[0])
         else:
-            raise ValueError("Invalid layer index for removing neuron.")
+            self.hidden_hidden_connections = []
+            for i in range(len(self.hidden_layers) - 1):
+                self.hidden_hidden_connections.append(self.create_random_connections(self.hidden_layers_sizes[i], self.hidden_layers_sizes[i+1]))
 
-    def update_connections_after_removal(self, layer_index, removed_index):
-        """Обновляет индексы связей после удаления нейрона."""
-        if layer_index < len(self.hidden_layers) - 1:
-            for i in range(len(self.hidden_hidden_connections[layer_index])):
-                self.hidden_hidden_connections[layer_index][i][self.hidden_hidden_connections[layer_index][i] > removed_index] -= 1
+        if self.hidden_layers:
+            self.hidden_output_connections = self.create_random_connections(self.hidden_layers_sizes[-1], self.output_size)
         else:
-            for i in range(len(self.hidden_output_connections)):
-                self.hidden_output_connections[i][self.hidden_output_connections[i] > removed_index] -= 1
+            self.hidden_output_connections = self.create_random_connections(self.input_size, self.output_size)
 
-    def adapt_network_structure(self, inputs, targets):
-        """Адаптирует структуру сети на основе активности нейронов и ошибки."""
-        # Вычисление ошибки
-        output_layer_outputs = self.predict(inputs)
-        output_errors = np.array(targets) - np.array(output_layer_outputs)
-        avg_error = np.mean(np.abs(output_errors))
+        print(f"Удален слой {layer_index}")
+        return True
 
-        # Добавление нейрона
-        if avg_error > self.neuron_addition_threshold:
-            layer_index = np.random.randint(0, len(self.hidden_layers))
-            self.add_neuron(layer_index)
-            print(f"Добавлен новый нейрон в слой {layer_index} из-за высокой ошибки.")
+    def calculate_layer_error(self, layer_output, target):
+        return np.mean((np.array(target) - np.array(layer_output)) ** 2)
 
-        # Удаление нейрона
-        for layer_index, layer in enumerate(self.hidden_layers):
-            for i, neuron in enumerate(layer):
-                if neuron.activity < self.neuron_removal_threshold:
-                    self.remove_neuron(layer_index, neuron_id=neuron.id)
-                    print(f"Удален нейрон {neuron.id} из слоя {layer_index} из-за низкой активности.")
-                    break  # Чтобы избежать проблем с индексацией после удаления
+    def adapt_network_structure(self, inputs, targets, epoch):
+        if inputs.shape[1] != self.input_size:
+            raise ValueError(f"Неверное количество входов. Ожидалось {self.input_size}, получено {inputs.shape[1]}.")
+
+        output_layer_outputs, dropout_masks = self.predict(inputs)
+        output_errors = targets - np.array(output_layer_outputs)
+        loss = np.mean(output_errors ** 2)
 
         # Адаптация связей (пример: удаление слабых связей)
         for layer_index, layer in enumerate(self.hidden_layers):
@@ -406,6 +480,52 @@ class NeuralNetwork:
                                     neuron.w = np.delete(neuron.w, j)
                                     print(f"Удалена слабая связь между скрытым нейроном {neuron.id} и входным нейроном {input_index}.")
 
+        # Добавление нейрона
+        if loss > self.neuron_addition_threshold:
+            self.neuron_addition_counter += 1
+            if self.neuron_addition_counter > self.neuron_addition_counter_limit:  # Порог для добавления
+                layer_index = np.random.randint(0, len(self.hidden_layers))
+                self.add_neuron(layer_index)
+                self.neuron_addition_counter = 0
+                self.last_adaptation = epoch
+        else:
+            self.neuron_addition_counter = 0
+
+        # Удаление нейрона
+        if loss < self.neuron_removal_threshold:
+            self.neuron_removal_counter += 1
+            if self.neuron_removal_counter > self.neuron_removal_counter_limit:  # Порог для удаления
+                layer_index = np.random.randint(0, len(self.hidden_layers))
+                if self.hidden_layers[layer_index]:
+                    neuron_to_remove = np.random.choice(self.hidden_layers[layer_index])
+                    self.remove_neuron(layer_index, neuron_to_remove.id)
+                    self.neuron_removal_counter = 0
+                    self.last_adaptation = epoch
+        else:
+            self.neuron_removal_counter = 0
+
+        # Добавление слоя
+        if len(self.hidden_layers) < self.max_layers and loss > self.layer_addition_threshold:
+            self.layer_addition_counter += 1
+            if self.layer_addition_counter > self.layer_addition_counter_limit:  # Порог для добавления слоя
+                self.add_layer(number_of_neurons=10)
+                self.hidden_layers_sizes.append(10)
+                self.layer_addition_counter = 0
+                self.last_adaptation = epoch
+        else:
+            self.layer_addition_counter = 0
+
+        # Удаление слоя
+        if len(self.hidden_layers) > 1 and loss < self.layer_removal_threshold:
+            self.layer_removal_counter += 1
+            if self.layer_removal_counter > self.layer_removal_counter_limit:  # Порог для удаления слоя
+                layer_index_to_remove = np.random.randint(0, len(self.hidden_layers))
+                self.remove_layer(layer_index_to_remove)
+                del self.hidden_layers_sizes[layer_index_to_remove]
+                self.layer_removal_counter = 0
+                self.last_adaptation = epoch
+        else:
+            self.layer_removal_counter = 0
 
     def visualize(self):
         """Визуализирует нейронную сеть с использованием Plotly."""
@@ -512,24 +632,114 @@ class NeuralNetwork:
                         )
         fig.show()
 
-# Пример использования
+    def save_to_file(self, filename):
+        """Сохраняет параметры модели в файл."""
+        model_params = {
+            'input_size': self.input_size,
+            'hidden_layers_sizes': self.hidden_layers_sizes,
+            'output_size': self.output_size,
+            'learning_rate': self.learning_rate,
+            'neuron_addition_threshold': self.neuron_addition_threshold,
+            'neuron_removal_threshold': self.neuron_removal_threshold,
+            'dropout_rate': self.dropout_rate,
+            'l1_lambda': self.l1_lambda,
+            'l2_lambda': self.l2_lambda,
+            'layer_addition_threshold': self.layer_addition_threshold,
+            'layer_removal_threshold': self.layer_removal_threshold,
+            'max_layers': self.max_layers,
+            'weights': [neuron.w.tolist() for neuron in self.hidden_neurons + self.output_neurons],
+            'biases': [neuron.b for neuron in self.hidden_neurons + self.output_neurons]
+        }
+        with open(filename, 'w') as f:
+            json.dump(model_params, f)
+
+    @classmethod
+    def load_from_file(cls, filename):
+        """Загружает параметры модели из файла."""
+        with open(filename, 'r') as f:
+            model_params = json.load(f)
+
+        # Создаем экземпляр сети с загруженными параметрами
+        nn = cls(
+            input_size=model_params['input_size'],
+            hidden_layers_sizes=model_params['hidden_layers_sizes'],
+            output_size=model_params['output_size'],
+            learning_rate=model_params['learning_rate'],
+            neuron_addition_threshold=model_params['neuron_addition_threshold'],
+            neuron_removal_threshold=model_params['neuron_removal_threshold'],
+            dropout_rate=model_params['dropout_rate'],
+            l1_lambda=model_params['l1_lambda'],
+            l2_lambda=model_params['l2_lambda'],
+            layer_addition_threshold=model_params['layer_addition_threshold'],
+            layer_removal_threshold=model_params['layer_removal_threshold'],
+            max_layers=model_params['max_layers']
+        )
+
+        # Загружаем веса и смещения
+        weights = [np.array(w) for w in model_params['weights']]
+        biases = model_params['biases']
+
+        # Устанавливаем веса и смещения для нейронов
+        for i, neuron in enumerate(nn.hidden_neurons + nn.output_neurons):
+            neuron.w = weights[i]
+            neuron.b = biases[i]
+
+        return nn
+
+# Функция для обработки изображения
+def preprocess_image(image_path, target_size=(28, 28)):
+    # Загружаем изображение
+    image = Image.open(image_path).convert("L")  # "L" для черно-белого изображения
+    
+    # Преобразуем изображение в нужный размер
+    image = image.resize(target_size, Image.Resampling.LANCZOS)
+    
+    # Преобразуем в numpy массив и нормализуем (0 или 1)
+    image_array = np.array(image) / 255.0  # Нормализуем пиксели (от 0 до 1)
+    
+    # Преобразуем в одномерный вектор
+    image_vector = image_array.flatten()
+    return image_vector
+
 if __name__ == '__main__':
-    # Создаем нейронную сеть с несколькими скрытыми слоями
-    nn = NeuralNetwork(input_size=93, hidden_layers_sizes=[93, 98, 97], output_size=93, learning_rate=0.1,
-                       neuron_addition_threshold=0.2, neuron_removal_threshold=0.1,
-                       connection_threshold=0.1)
+    input_size = 28 * 28  # Размер изображения 28x28 пикселей
+    hidden_layers_sizes = [64]  # Скрытый слой с 64 нейронами
+    output_size = 1  # Бинарная классификация (буква "A")
 
-    # Генерируем случайные входные данные и целевые значения
-    inputs = np.random.rand(93)
-    targets = np.random.rand(93)
+    nn = NeuralNetwork(input_size=input_size, hidden_layers_sizes=hidden_layers_sizes, output_size=output_size, learning_rate=0.01,
+                 neuron_addition_threshold=0.9, neuron_removal_threshold=0.1,
+                 dropout_rate=0.5, l1_lambda=0.01, l2_lambda=0.01,
+                 layer_addition_threshold=0.95, layer_removal_threshold=0.025,
+                 max_layers=5, adaptation_cooldown=10,
+                 neuron_addition_counter_limit=5, neuron_removal_counter_limit=5,
+                 layer_addition_counter_limit=10, layer_removal_counter_limit=10,
+                 batch_size=32, patience=10, connection_threshold=0.2)
 
-    # Обучаем сеть с динамической адаптацией структуры
-    print("Начинаем обучение с динамической адаптацией структуры...\nСгенерированные целевые значения: ", targets)
-    nn.train(inputs, targets, epochs=100)
+    # Преобразуем изображение с буквой "А" в данные
+    image_path = "A.jpg"  # Укажи путь к изображению с буквой "A"
+    input_data = preprocess_image(image_path)
 
-    # Получаем предсказания сети после обучения
-    predictions = nn.predict(inputs)
-    print("\nИтог:", predictions)
+    # Подготовим целевую метку (например, 1 для буквы "А")
+    target_data = np.array([1])
 
-    # Визуализируем сеть после обучения
-    nn.visualize()
+    # Тренировка модели
+    nn.train(np.array([input_data]), target_data, epochs=100)
+
+    # Тестирование модели
+    test_image_path = "A_test.png"  # Укажи путь к тестовому изображению
+    test_input = preprocess_image(test_image_path)
+    prediction = nn.predict(test_input.reshape(1, -1))
+    print("Prediction for test input:", prediction)
+
+    # Сохранение модели
+    nn.save_to_file("nn.json")
+    
+    # Создаём объект нейронной сети
+    nn_test = NeuralNetwork.load_from_file("nn.json")
+
+    # Тестирование модели
+    test_image_path = "A_test.png"  # Укажи путь к тестовому изображению
+    test_input = preprocess_image(test_image_path)
+    prediction = nn_test.predict(test_input.reshape(1, -1))
+    print("Prediction for test input(loaded):", prediction)
+    nn_test.visualize()
