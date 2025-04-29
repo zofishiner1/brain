@@ -96,6 +96,7 @@ class NeuralNetwork:
 
         # Параметры для адаптации структуры сети
         self.adaptation_cooldown = adaptation_cooldown
+        self.orig_adapt = adaptation_cooldown
         self.neuron_addition_counter_limit = neuron_addition_counter_limit
         self.neuron_removal_counter_limit = neuron_removal_counter_limit
         self.layer_addition_counter_limit = layer_addition_counter_limit
@@ -239,7 +240,7 @@ class NeuralNetwork:
 
                 if self.adaptation_cooldown == 0:
                     self.adapt_network_structure(input_sample.reshape(1, -1), target_sample.reshape(1, -1), epoch=epoch)
-                    self.adaptation_cooldown = 10  # Сброс счетчика
+                    self.adaptation_cooldown = self.orig_adapt  # Сброс счетчика
                 else:
                     self.adaptation_cooldown -= 1  # Уменьшаем счетчик
 
@@ -404,7 +405,7 @@ class NeuralNetwork:
         for _ in range(number_of_neurons):
             new_layer.append(Neuron(number_of_weights=self.input_size, activation_function=activation_function))
 
-        self.layers.append(new_layer)
+        self.hidden_layers.append(new_layer)
         self.input_size = number_of_neurons
         self.layer_outputs.append([neuron.activity for neuron in new_layer])
         print(f"Добавлен слой с размером {number_of_neurons}")
@@ -706,14 +707,28 @@ if __name__ == '__main__':
     hidden_layers_sizes = [64]  # Скрытый слой с 64 нейронами
     output_size = 1  # Бинарная классификация (буква "A")
 
-    nn = NeuralNetwork(input_size=input_size, hidden_layers_sizes=hidden_layers_sizes, output_size=output_size, learning_rate=0.01,
-                 neuron_addition_threshold=0.9, neuron_removal_threshold=0.1,
-                 dropout_rate=0.5, l1_lambda=0.01, l2_lambda=0.01,
-                 layer_addition_threshold=0.95, layer_removal_threshold=0.025,
-                 max_layers=5, adaptation_cooldown=10,
-                 neuron_addition_counter_limit=5, neuron_removal_counter_limit=5,
-                 layer_addition_counter_limit=10, layer_removal_counter_limit=10,
-                 batch_size=32, patience=10, connection_threshold=0.2)
+    nn = NeuralNetwork(
+    input_size=input_size,
+    hidden_layers_sizes=hidden_layers_sizes,
+    output_size=output_size,
+    learning_rate=0.01,
+    neuron_addition_threshold=0.01,
+    neuron_removal_threshold=0.11,
+    dropout_rate=0.0,
+    l1_lambda=0.0,
+    l2_lambda=0.0,
+    layer_addition_threshold=0.01,
+    layer_removal_threshold=0.01,
+    max_layers=10,
+    adaptation_cooldown=0,
+    neuron_addition_counter_limit=10,
+    neuron_removal_counter_limit=10,
+    layer_addition_counter_limit=10,
+    layer_removal_counter_limit=10,
+    batch_size=64,
+    patience=1,
+    connection_threshold=0.01
+)
 
     # Преобразуем изображение с буквой "А" в данные
     image_path = "A.jpg"  # Укажи путь к изображению с буквой "A"
