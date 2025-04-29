@@ -1,8 +1,10 @@
 import numpy as np
-import json
 from PIL import Image
 import networkx as nx
 import plotly.graph_objects as go
+import h5py
+import os
+import json
 
 class Neuron:
     def __init__(self, number_of_weights=1, neuron_id=None, neuron_type="Input", activation_function="sigmoid"):
@@ -229,10 +231,11 @@ class NeuralNetwork:
 
     def train(self, inputs, targets, epochs=100):
         best_loss = float('inf')
-        patience = 10
+        patience = self.patience if hasattr(self, 'patience') else 10
         counter = 0
 
         for epoch in range(epochs):
+            epoch_loss = 0  # Накопление loss за эпоху
 
             for idx in range(len(inputs)):
                 input_sample = inputs[idx]
@@ -244,14 +247,16 @@ class NeuralNetwork:
                 else:
                     self.adaptation_cooldown -= 1  # Уменьшаем счетчик
 
-                layer_outputs = [input_sample]
+                # Прямое распространение
+                layer_outputs = [input_sample.tolist()]  # Выходы каждого слоя, включая входной
                 output_layer_outputs, dropout_masks = self.predict(input_sample.reshape(1, -1))
+                layer_outputs += [mask.tolist() if isinstance(mask, np.ndarray) else mask for mask in dropout_masks]
+                layer_outputs.append(output_layer_outputs)
 
                 output_errors = target_sample - np.array(output_layer_outputs)
 
                 l1_term = sum(np.sum(np.abs(neuron.w)) for neuron in self.hidden_neurons + self.output_neurons)
                 l2_term = sum(np.sum(neuron.w ** 2) for neuron in self.hidden_neurons + self.output_neurons)
-
                 loss = np.mean(output_errors ** 2) + self.l1_lambda * l1_term + self.l2_lambda * l2_term
 
                 # Обновление весов выходного слоя
@@ -259,20 +264,20 @@ class NeuralNetwork:
                     connected_inputs_indices = self.hidden_output_connections[i]
                     for j, input_index in enumerate(connected_inputs_indices):
                         delta = output_errors[i] * self.sigmoid_derivative(output_layer_outputs[i])
-                        output_neuron.w[j] += self.learning_rate * (delta * layer_outputs[-1][int(input_index)] -
-                                                                     self.l1_lambda * np.sign(output_neuron.w[j]) -
-                                                                     self.l2_lambda * output_neuron.w[j])
-                        output_neuron.b += self.learning_rate * delta
+                        output_neuron.w[j] += self.learning_rate * (
+                            delta * layer_outputs[-2][int(input_index)]
+                            - self.l1_lambda * np.sign(output_neuron.w[j])
+                            - self.l2_lambda * output_neuron.w[j]
+                        )
+                    output_neuron.b += self.learning_rate * delta
 
+                # Подготовка массива ошибок для скрытых слоев
                 hidden_errors = [np.zeros(len(layer)) for layer in self.hidden_layers]
 
                 # Обратное распространение ошибки
                 for layer_index in reversed(range(len(self.hidden_layers))):
                     hidden_layer = self.hidden_layers[layer_index]
-                    if layer_index + 1 < len(layer_outputs):
-                        current_layer_outputs = layer_outputs[layer_index + 1]
-                    else:
-                       current_layer_outputs = [0.0] * len(hidden_layer)
+                    current_layer_outputs = layer_outputs[layer_index + 1]
 
                     if layer_index == len(self.hidden_layers) - 1:
                         next_layer_neurons = self.output_neurons
@@ -285,7 +290,7 @@ class NeuralNetwork:
                         next_layer_errors = hidden_errors[layer_index + 1]
                         next_layer_outputs = layer_outputs[layer_index + 2]
 
-                    dropout_mask = dropout_masks[layer_index]
+                    dropout_mask = dropout_masks[layer_index] if layer_index < len(dropout_masks) else np.ones(len(hidden_layer))
 
                     for i, neuron in enumerate(hidden_layer):
                         error_sum = 0
@@ -294,8 +299,7 @@ class NeuralNetwork:
                                 input_index_in_next_neuron = np.where(next_layer_connections[j] == i)[0][0]
                                 delta = next_layer_errors[j] * self.sigmoid_derivative(next_layer_outputs[j])
                                 error_sum += delta * next_neuron.w[input_index_in_next_neuron]
-
-                    hidden_errors[layer_index][i] = error_sum * dropout_mask[i]
+                        hidden_errors[layer_index][i] = error_sum * dropout_mask[i]
 
                     if layer_index == 0:
                         previous_layer_outputs = layer_outputs[0]
@@ -311,36 +315,38 @@ class NeuralNetwork:
                                 original_num_weights = len(neuron.w)
                                 num_connections = len(connected_inputs_indices)
                                 min_len = min(original_num_weights, num_connections)
-
                                 if len(neuron.w) != len(connected_inputs_indices):
                                     if len(connected_inputs_indices) > len(neuron.w):
                                         neuron.w = np.concatenate(
-                                            (neuron.w, np.random.normal(size=len(connected_inputs_indices) - len(neuron.w))))
+                                            (neuron.w, np.random.normal(size=len(connected_inputs_indices) - len(neuron.w)))
+                                        )
                                     else:
                                         neuron.w = neuron.w[:len(connected_inputs_indices)]
-
                                 for j in range(min_len):
-                                    delta = hidden_errors[layer_index][i] * self.sigmoid_derivative(
-                                        current_layer_outputs[i])
+                                    delta = hidden_errors[layer_index][i] * self.sigmoid_derivative(current_layer_outputs[i])
                                     neuron.w[j] += self.learning_rate * (
-                                            delta * previous_layer_outputs[int(connected_inputs_indices[j])] -
-                                            self.l1_lambda * np.sign(neuron.w[j]) -
-                                            self.l2_lambda * neuron.w[j])
-                                    neuron.b += self.learning_rate * delta
+                                        delta * previous_layer_outputs[int(connected_inputs_indices[j])]
+                                        - self.l1_lambda * np.sign(neuron.w[j])
+                                        - self.l2_lambda * neuron.w[j]
+                                    )
+                                neuron.b += self.learning_rate * delta
 
-            if loss < best_loss:
-                best_loss = loss
+                epoch_loss += loss
+
+            avg_epoch_loss = epoch_loss / len(inputs)
+
+            if avg_epoch_loss < best_loss:
+                best_loss = avg_epoch_loss
                 counter = 0
             else:
                 counter += 1
 
             if counter >= patience:
-                print("Early stopping triggered")
-                break
+                print(f"Early stopping triggered at epoch {epoch+1}")
+                return  # Прерываем обучение полностью
 
-            if epoch:
-                mse = np.mean(output_errors ** 2)
-                print(f"Epoch {epoch}, MSE: {mse}, Loss: {loss}, Adapt cooldown: {self.adaptation_cooldown}")
+            mse = np.mean(output_errors ** 2)
+            print(f"Epoch {epoch+1}, MSE: {mse}, Loss: {avg_epoch_loss}, Adapt cooldown: {self.adaptation_cooldown}")
 
 
     def sigmoid_derivative(self, output):
@@ -402,41 +408,37 @@ class NeuralNetwork:
 
     def add_layer(self, number_of_neurons, activation_function="sigmoid"):
         new_layer = []
-        for _ in range(number_of_neurons):
-            new_layer.append(Neuron(number_of_weights=self.input_size, activation_function=activation_function))
-
+        new_neuron_id = max([neuron.id for neuron in self.hidden_neurons + self.input_neurons + self.output_neurons]) + 1
+        for i in range(number_of_neurons):
+            new_layer.append(Neuron(number_of_weights=self.input_size, neuron_id = new_neuron_id + i, activation_function=activation_function))
         self.hidden_layers.append(new_layer)
-        self.input_size = number_of_neurons
-        self.layer_outputs.append([neuron.activity for neuron in new_layer])
-        print(f"Добавлен слой с размером {number_of_neurons}")
+        self.hidden_neurons.extend(new_layer)
+        self.hidden_layers_sizes.append(number_of_neurons)
 
-    def remove_layer(self, layer_index):
-        if len(self.hidden_layers) <= 1:
-            print("Нельзя удалить единственный слой.")
-            return False
-
-        if not (0 <= layer_index < len(self.hidden_layers)):
-            print("Неверный индекс слоя для удаления.")
-            return False
-
-        del self.hidden_layers[layer_index]
-        del self.hidden_layers_sizes[layer_index]
-        self.hidden_neurons = [neuron for layer in self.hidden_layers for neuron in layer]
-
-        if layer_index == 0:
-            self.input_hidden_connections = self.create_random_connections(self.input_size, self.hidden_layers_sizes[0])
-        else:
+        # Обновляем связи между слоями
+        if len(self.hidden_layers) > 1:
             self.hidden_hidden_connections = []
             for i in range(len(self.hidden_layers) - 1):
                 self.hidden_hidden_connections.append(self.create_random_connections(self.hidden_layers_sizes[i], self.hidden_layers_sizes[i+1]))
 
+        # Обновляем связи между последним скрытым слоем и выходным слоем
         if self.hidden_layers:
             self.hidden_output_connections = self.create_random_connections(self.hidden_layers_sizes[-1], self.output_size)
         else:
             self.hidden_output_connections = self.create_random_connections(self.input_size, self.output_size)
 
-        print(f"Удален слой {layer_index}")
-        return True
+        print(f"Добавлен слой с размером {number_of_neurons}")
+
+
+    def remove_layer(self, layer_index):
+        if 0 <= layer_index < len(self.hidden_layers):
+            print(f"Удален слой {layer_index}")
+            del self.hidden_layers[layer_index]
+            del self.hidden_layers_sizes[layer_index]
+            self.hidden_neurons = [neuron for layer in self.hidden_layers for neuron in layer]
+            # После удаления обязательно пересчитываем связи и веса!
+            self.update_connections_after_layer_change()
+
 
     def calculate_layer_error(self, layer_output, target):
         return np.mean((np.array(target) - np.array(layer_output)) ** 2)
@@ -509,8 +511,8 @@ class NeuralNetwork:
         if len(self.hidden_layers) < self.max_layers and loss > self.layer_addition_threshold:
             self.layer_addition_counter += 1
             if self.layer_addition_counter > self.layer_addition_counter_limit:  # Порог для добавления слоя
-                self.add_layer(number_of_neurons=10)
-                self.hidden_layers_sizes.append(10)
+                self.add_layer(number_of_neurons=self.input_size)
+                self.hidden_layers_sizes.append(self.input_size)
                 self.layer_addition_counter = 0
                 self.last_adaptation = epoch
         else:
@@ -633,6 +635,36 @@ class NeuralNetwork:
                         )
         fig.show()
 
+    def update_connections_after_layer_change(self):
+        # Пересчёт input_hidden_connections
+        if self.hidden_layers:
+            self.input_hidden_connections = self.create_random_connections(
+                self.input_size, len(self.hidden_layers[0])
+            )
+        else:
+            self.input_hidden_connections = []
+
+        # Пересчёт hidden_hidden_connections
+        self.hidden_hidden_connections = []
+        for i in range(len(self.hidden_layers) - 1):
+            self.hidden_hidden_connections.append(
+                self.create_random_connections(len(self.hidden_layers[i]), len(self.hidden_layers[i+1]))
+            )
+
+        # Пересчёт hidden_output_connections
+        if self.hidden_layers:
+            self.hidden_output_connections = self.create_random_connections(
+                len(self.hidden_layers[-1]), self.output_size
+            )
+        else:
+            self.hidden_output_connections = self.create_random_connections(
+                self.input_size, self.output_size
+            )
+
+        # Пересчёт весов нейронов
+        self.initialize_weights()
+
+
     def save_to_file(self, filename):
         """Сохраняет параметры модели в файл."""
         model_params = {
@@ -687,74 +719,148 @@ class NeuralNetwork:
 
         return nn
 
-# Функция для обработки изображения
+# Функция для предобработки одного изображения (ваша уже есть)
 def preprocess_image(image_path, target_size=(28, 28)):
-    # Загружаем изображение
-    image = Image.open(image_path).convert("L")  # "L" для черно-белого изображения
-    
-    # Преобразуем изображение в нужный размер
+    image = Image.open(image_path).convert("L")
     image = image.resize(target_size, Image.Resampling.LANCZOS)
-    
-    # Преобразуем в numpy массив и нормализуем (0 или 1)
-    image_array = np.array(image) / 255.0  # Нормализуем пиксели (от 0 до 1)
-    
-    # Преобразуем в одномерный вектор
+    image_array = np.array(image) / 255.0
     image_vector = image_array.flatten()
     return image_vector
 
+def load_and_preprocess_data(folder_path, target_size=(28, 28)):
+    # Русский алфавит А-Я
+    russian_alphabet = [chr(code) for code in range(ord('А'), ord('Я') + 1)]
+    label_map = {letter: idx + 1 for idx, letter in enumerate(russian_alphabet)}  # метки от 1 до 33
+
+    X, y = [], []
+
+    for filename in os.listdir(folder_path):
+        if filename.lower().endswith('.png'):
+            letter = os.path.splitext(filename)[0].upper()
+            if letter in label_map:
+                # Загрузка и предобработка изображения
+                image = Image.open(os.path.join(folder_path, filename)).convert("L")
+                image = image.resize(target_size, Image.Resampling.LANCZOS)
+                image_array = np.array(image) / 255.0
+                image_vector = image_array.flatten()
+
+                X.append(image_vector)
+                y.append(label_map[letter])
+            else:
+                print(f"Пропущен файл {filename}: имя не в русском алфавите")
+    
+    return np.array(X), np.array(y)
+
+
 if __name__ == '__main__':
-    input_size = 28 * 28  # Размер изображения 28x28 пикселей
-    hidden_layers_sizes = [64]  # Скрытый слой с 64 нейронами
-    output_size = 1  # Бинарная классификация (буква "A")
+    # ---------------------------
+    # Старый пример (выход 1 - бинарная классификация буквы "А")
+    # ---------------------------
+    input_size_old = 28 * 28
+    hidden_layers_sizes_old = [64]
+    output_size_old = 1  # бинарная классификация
 
     nn = NeuralNetwork(
-    input_size=input_size,
-    hidden_layers_sizes=hidden_layers_sizes,
-    output_size=output_size,
-    learning_rate=0.01,
-    neuron_addition_threshold=0.01,
-    neuron_removal_threshold=0.11,
-    dropout_rate=0.0,
-    l1_lambda=0.0,
-    l2_lambda=0.0,
-    layer_addition_threshold=0.01,
-    layer_removal_threshold=0.01,
-    max_layers=10,
-    adaptation_cooldown=0,
-    neuron_addition_counter_limit=10,
-    neuron_removal_counter_limit=10,
-    layer_addition_counter_limit=10,
-    layer_removal_counter_limit=10,
-    batch_size=64,
-    patience=1,
-    connection_threshold=0.01
-)
+        input_size=input_size_old,
+        hidden_layers_sizes=hidden_layers_sizes_old,
+        output_size=output_size_old,
+        learning_rate=0.01,
+        neuron_addition_threshold=0.01,
+        neuron_removal_threshold=0.11,
+        dropout_rate=0.0,
+        l1_lambda=0.0,
+        l2_lambda=0.0,
+        layer_addition_threshold=0.01,
+        layer_removal_threshold=0.01,
+        max_layers=10,
+        adaptation_cooldown=0,
+        neuron_addition_counter_limit=10,
+        neuron_removal_counter_limit=10,
+        layer_addition_counter_limit=10,
+        layer_removal_counter_limit=10,
+        batch_size=64,
+        patience=10,
+        connection_threshold=0.01
+    )
 
-    # Преобразуем изображение с буквой "А" в данные
-    image_path = "A.jpg"  # Укажи путь к изображению с буквой "A"
+    # Старый пример - раскомментирован
+    image_path = "A.png"  # путь к изображению с буквой "А"
     input_data = preprocess_image(image_path)
 
-    # Подготовим целевую метку (например, 1 для буквы "А")
-    target_data = np.array([1])
+    target_data = np.array([1])  # метка для буквы "А"
 
-    # Тренировка модели
     nn.train(np.array([input_data]), target_data, epochs=100)
-
-    # Тестирование модели
-    test_image_path = "A_test.png"  # Укажи путь к тестовому изображению
-    test_input = preprocess_image(test_image_path)
-    prediction = nn.predict(test_input.reshape(1, -1))
-    print("Prediction for test input:", prediction)
 
     # Сохранение модели
     nn.save_to_file("nn.json")
     
+    test_image_path = "A_test.png"
+    test_input = preprocess_image(test_image_path).reshape(1, -1)
+    prediction = nn.predict(test_input)
+    print("Prediction for test input:", prediction)
+
     # Создаём объект нейронной сети
     nn_test = NeuralNetwork.load_from_file("nn.json")
 
-    # Тестирование модели
-    test_image_path = "A_test.png"  # Укажи путь к тестовому изображению
-    test_input = preprocess_image(test_image_path)
-    prediction = nn_test.predict(test_input.reshape(1, -1))
+    test_image_path = "A_test.png"
+    test_input = preprocess_image(test_image_path).reshape(1, -1)
+    prediction = nn_test.predict(test_input)
     print("Prediction for test input(loaded):", prediction)
+
+
+    # ---------------------------
+    # Новый пример (выход 33 - классификация всех букв русского алфавита)
+    # ---------------------------
+    """
+    input_size_new = 28 * 28
+    hidden_layers_sizes_new = [64]
+    output_size_new = 33  # 33 буквы русского алфавита
+
+    nn_new = NeuralNetwork(
+        input_size=input_size_new,
+        hidden_layers_sizes=hidden_layers_sizes_new,
+        output_size=output_size_new,
+        learning_rate=0.01,
+        neuron_addition_threshold=0.01,
+        neuron_removal_threshold=0.11,
+        dropout_rate=0.0,
+        l1_lambda=0.0,
+        l2_lambda=0.0,
+        layer_addition_threshold=0.01,
+        layer_removal_threshold=0.01,
+        max_layers=10,
+        adaptation_cooldown=0,
+        neuron_addition_counter_limit=10,
+        neuron_removal_counter_limit=10,
+        layer_addition_counter_limit=10,
+        layer_removal_counter_limit=10,
+        batch_size=64,
+        patience=1,
+        connection_threshold=0.01
+    )
+
+    X_train, y_train = load_and_preprocess_data("train_data", target_size=(28, 28))
+
+    # Если нужно one-hot кодирование:
+    # from keras.utils import to_categorical
+    # y_train_onehot = to_categorical(y_train - 1, num_classes=output_size_new)
+
+    nn_new.train(X_train, y_train, epochs=100)
+
+    test_image_path = "А_test.png"
+    test_input = preprocess_image(test_image_path).reshape(1, -1)
+    prediction = nn_new.predict(test_input)
+    print("Prediction for test input (new model):", prediction)
+
+    # Сохранение модели
+    nn.save_to_file("nn.json")
+
+    # Создаём объект нейронной сети
+    nn_test = NeuralNetwork.load_from_file("nn.json")
+
+    test_input_loaded = preprocess_image(test_image_path).reshape(1, -1)
+    prediction_loaded = nn_test.predict(test_input_loaded)
+    print("Prediction for test input (loaded model):", prediction_loaded)
+
     nn_test.visualize()
+    """
