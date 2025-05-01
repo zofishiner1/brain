@@ -680,11 +680,17 @@ class NeuralNetwork:
             'layer_addition_threshold': self.layer_addition_threshold,
             'layer_removal_threshold': self.layer_removal_threshold,
             'max_layers': self.max_layers,
-            'weights': [neuron.w.tolist() for neuron in self.hidden_neurons + self.output_neurons],
-            'biases': [neuron.b for neuron in self.hidden_neurons + self.output_neurons]
+            # Сохраняем нейроны полностью
+            'hidden_neurons': [neuron.serialize() for neuron in self.hidden_neurons],
+            'output_neurons': [neuron.serialize() for neuron in self.output_neurons],
+            # Сохраняем структуру связей
+            'input_hidden_connections': [conn.tolist() for conn in self.input_hidden_connections],
+            'hidden_hidden_connections': [[conn.tolist() for conn in layer] for layer in self.hidden_hidden_connections],
+            'hidden_output_connections': [conn.tolist() for conn in self.hidden_output_connections],
         }
         with open(filename, 'w') as f:
             json.dump(model_params, f)
+
 
     @classmethod
     def load_from_file(cls, filename):
@@ -692,7 +698,7 @@ class NeuralNetwork:
         with open(filename, 'r') as f:
             model_params = json.load(f)
 
-        # Создаем экземпляр сети с загруженными параметрами
+        # Создаём экземпляр сети с нужными размерами
         nn = cls(
             input_size=model_params['input_size'],
             hidden_layers_sizes=model_params['hidden_layers_sizes'],
@@ -708,16 +714,24 @@ class NeuralNetwork:
             max_layers=model_params['max_layers']
         )
 
-        # Загружаем веса и смещения
-        weights = [np.array(w) for w in model_params['weights']]
-        biases = model_params['biases']
+        # Восстанавливаем нейронов
+        nn.hidden_neurons = [Neuron.deserialize(n) for n in model_params['hidden_neurons']]
+        nn.output_neurons = [Neuron.deserialize(n) for n in model_params['output_neurons']]
 
-        # Устанавливаем веса и смещения для нейронов
-        for i, neuron in enumerate(nn.hidden_neurons + nn.output_neurons):
-            neuron.w = weights[i]
-            neuron.b = biases[i]
+        # Восстанавливаем структуру слоев
+        nn.hidden_layers = []
+        idx = 0
+        for size in nn.hidden_layers_sizes:
+            nn.hidden_layers.append(nn.hidden_neurons[idx:idx+size])
+            idx += size
+
+        # Восстанавливаем связи
+        nn.input_hidden_connections = [np.array(conn) for conn in model_params['input_hidden_connections']]
+        nn.hidden_hidden_connections = [[np.array(conn) for conn in layer] for layer in model_params['hidden_hidden_connections']]
+        nn.hidden_output_connections = [np.array(conn) for conn in model_params['hidden_output_connections']]
 
         return nn
+
 
 # Функция для предобработки одного изображения (ваша уже есть)
 def preprocess_image(image_path, target_size=(28, 28)):
