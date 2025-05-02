@@ -507,10 +507,10 @@ class NeuralNetwork:
         else:
             self.neuron_removal_counter = 0
 
-        # Добавление слоя
-        if len(self.hidden_layers) < self.max_layers and loss > self.layer_addition_threshold:
+        # Добавление слоя (только если loss > 1)
+        if len(self.hidden_layers) < self.max_layers and loss > 1:  # Изменено условие
             self.layer_addition_counter += 1
-            if self.layer_addition_counter > self.layer_addition_counter_limit:  # Порог для добавления слоя
+            if self.layer_addition_counter > self.layer_addition_counter_limit:
                 self.add_layer(number_of_neurons=self.input_size)
                 self.hidden_layers_sizes.append(self.input_size)
                 self.layer_addition_counter = 0
@@ -521,7 +521,7 @@ class NeuralNetwork:
         # Удаление слоя
         if len(self.hidden_layers) > 1 and loss < self.layer_removal_threshold:
             self.layer_removal_counter += 1
-            if self.layer_removal_counter > self.layer_removal_counter_limit:  # Порог для удаления слоя
+            if self.layer_removal_counter > self.layer_removal_counter_limit:
                 layer_index_to_remove = np.random.randint(0, len(self.hidden_layers))
                 self.remove_layer(layer_index_to_remove)
                 del self.hidden_layers_sizes[layer_index_to_remove]
@@ -770,6 +770,7 @@ if __name__ == '__main__':
     # ---------------------------
     # Старый пример (выход 1 - бинарная классификация буквы "А")
     # ---------------------------
+    """
     input_size_old = 28 * 28
     hidden_layers_sizes_old = [64]
     output_size_old = 1  # бинарная классификация
@@ -808,7 +809,7 @@ if __name__ == '__main__':
     # Сохранение модели
     nn.save_to_file("nn.json")
     
-    test_image_path = "A_test.png"
+    test_image_path = ""
     test_input = preprocess_image(test_image_path).reshape(1, -1)
     prediction = nn.predict(test_input)
     print("Prediction for test input:", prediction)
@@ -816,16 +817,15 @@ if __name__ == '__main__':
     # Создаём объект нейронной сети
     nn_test = NeuralNetwork.load_from_file("nn.json")
 
-    test_image_path = "A_test.png"
+    test_image_path = "train_data/A.png"
     test_input = preprocess_image(test_image_path).reshape(1, -1)
     prediction = nn_test.predict(test_input)
     print("Prediction for test input(loaded):", prediction)
-
+     """
 
     # ---------------------------
     # Новый пример (выход 33 - классификация всех букв русского алфавита)
     # ---------------------------
-    """
     input_size_new = 28 * 28
     hidden_layers_sizes_new = [64]
     output_size_new = 33  # 33 буквы русского алфавита
@@ -855,10 +855,6 @@ if __name__ == '__main__':
 
     X_train, y_train = load_and_preprocess_data("train_data", target_size=(28, 28))
 
-    # Если нужно one-hot кодирование:
-    # from keras.utils import to_categorical
-    # y_train_onehot = to_categorical(y_train - 1, num_classes=output_size_new)
-
     nn_new.train(X_train, y_train, epochs=100)
 
     test_image_path = "А_test.png"
@@ -877,4 +873,3 @@ if __name__ == '__main__':
     print("Prediction for test input (loaded model):", prediction_loaded)
 
     nn_test.visualize()
-    """
