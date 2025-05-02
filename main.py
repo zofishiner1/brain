@@ -843,7 +843,7 @@ if __name__ == '__main__':
         layer_addition_threshold=0.01,
         layer_removal_threshold=0.01,
         max_layers=10,
-        adaptation_cooldown=0,
+        adaptation_cooldown=10,
         neuron_addition_counter_limit=10,
         neuron_removal_counter_limit=10,
         layer_addition_counter_limit=10,
@@ -863,7 +863,7 @@ if __name__ == '__main__':
     print("Prediction for test input (new model):", prediction)
 
     # Сохранение модели
-    nn.save_to_file("nn.json")
+    nn_new.save_to_file("nn.json")
 
     # Создаём объект нейронной сети
     nn_test = NeuralNetwork.load_from_file("nn.json")
